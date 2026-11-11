@@ -16,3 +16,7 @@ export const UPI = {
   id: "bhagwatiprasadvaishnav2424@okaxis",
   name: "Room Rent"
 };
+
+// Public key that lets this site send browser notifications.
+// It is safe to keep in the page.
+export const VAPID_KEY = "BAcNh7lBYUcQKaGDGn8O0aqwM8MaJF9KRCxTiBvi-vFHcEJkXRYBOCMvaTcJ2bVcpgHTqTOqRY-CrC6WtM4-CgE";
