@@ -1,0 +1,60 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Only the two family Google accounts count as family.
+    function isFamily() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email in [
+          'saranshvaishanv18@gmail.com',
+          'saranshvaishnav2218@gmail.com'
+        ];
+    }
+
+    // A tenant's phone registering for reminders. It must name a real
+    // tenant page, and nothing else can be stored in the record.
+    function validDevice() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['viewToken', 'fcmToken', 'lang', 'updatedAt'])
+        && d.keys().hasAll(['viewToken', 'fcmToken', 'lang'])
+        && d.viewToken is string && d.viewToken.size() == 32
+        && d.fcmToken is string && d.fcmToken.size() > 50 && d.fcmToken.size() < 400
+        && d.lang in ['hi', 'en']
+        && exists(/databases/$(database)/documents/tenantViews/$(d.viewToken));
+    }
+
+    // Tenant details and monthly bills: family only.
+    match /rooms/{roomId} {
+      allow read, write: if isFamily();
+    }
+
+    match /payments/{paymentId} {
+      allow read, write: if isFamily();
+    }
+
+    // The private page a tenant sees. The document id is a long random
+    // token that only that tenant has. Reading one document is allowed,
+    // listing all of them is not.
+    match /tenantViews/{token} {
+      allow get: if true;
+      allow list: if false;
+      allow write: if isFamily();
+    }
+
+    // Tenant phones that turned on reminders. A tenant can add or refresh
+    // their own phone but cannot read, list or delete any records.
+    match /devices/{deviceId} {
+      allow create: if validDevice();
+      allow update: if validDevice()
+        && resource.data.viewToken == request.resource.data.viewToken;
+      allow read, delete: if isFamily();
+    }
+
+    // Family phones that turned on the daily summary.
+    match /familyDevices/{deviceId} {
+      allow read, write: if isFamily();
+    }
+  }
+}

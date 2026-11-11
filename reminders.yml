@@ -1,0 +1,45 @@
+name: Daily rent reminders
+
+on:
+  schedule:
+    # 03:30 UTC is 9:00 AM in India. GitHub may start it a little late.
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Only show what would be sent (true or false)"
+        default: "false"
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install
+        run: npm install --no-audit --no-fund
+
+      - name: Send reminders
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          SITE_URL: https://saransh2218.github.io/rent-tracker/
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: node scripts/send-reminders.js
+
+      # GitHub pauses scheduled jobs on public repositories after 60 days
+      # without activity. This asks GitHub to keep this schedule enabled.
+      - name: Keep the schedule active
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/reminders.yml/enable"

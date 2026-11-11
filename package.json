@@ -1,0 +1,9 @@
+{
+  "name": "rent-tracker",
+  "private": true,
+  "type": "module",
+  "description": "Daily reminder sender for the rent tracker",
+  "dependencies": {
+    "firebase-admin": "14.4.0"
+  }
+}
