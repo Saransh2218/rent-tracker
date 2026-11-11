@@ -1,0 +1,82 @@
+body {
+  font-family: "Noto Sans", "Noto Sans Devanagari", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.6;
+}
+
+.t-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0 16px;
+}
+.t-top .tenant { font-size: 1rem; }
+
+.due-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 6px solid var(--up);
+  border-radius: 8px;
+  padding: 16px;
+  display: grid;
+  gap: 4px;
+}
+.due-card.paid { border-left-color: var(--paid); }
+.due-card.soon { border-left-color: var(--soon); }
+.due-card.overdue { border-left-color: var(--over); }
+.due-card .amount { font-size: 2rem; margin-top: 2px; }
+.due-card .pill { justify-self: start; margin-top: 6px; }
+
+.breakdown {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+.breakdown li { display: flex; justify-content: space-between; gap: 12px; }
+.breakdown .sub { font-size: 0.875rem; color: var(--muted); }
+
+.section { margin-top: 20px; display: grid; gap: 10px; }
+
+.qr-box {
+  justify-self: center;
+  width: min(72vw, 260px);
+  padding: 10px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.qr-box svg { display: block; width: 100%; height: auto; }
+
+.upi-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 8px 8px 12px;
+}
+.upi-row code {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.9375rem;
+  overflow-wrap: anywhere;
+}
+
+.pay-actions { display: grid; gap: 8px; }
+.pay-actions .btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+
+.history { padding: 0; margin: 0; list-style: none; display: grid; gap: 8px; }
+.history li {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 2px;
+}
+.history .row { display: flex; justify-content: space-between; gap: 12px; font-weight: 600; }
