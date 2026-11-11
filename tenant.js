@@ -1,7 +1,8 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
-import { getFirestore, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
+import { getFirestore, doc, onSnapshot, setDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
 import { firebaseConfig, UPI } from "./firebase-config.js";
 import { computeDues, buildUpiLink } from "./tenant-logic.js";
+import { pushPossible, pushSupported, getPushToken, dropPushToken, onForegroundMessage, deviceId } from "./push.js";
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
@@ -9,7 +10,7 @@ const db = getFirestore(app);
 const root = document.getElementById("app");
 const token = new URLSearchParams(location.search).get("t") || "";
 
-const state = { view: null, status: "loading", lang: loadLang() };
+const state = { view: null, status: "loading", lang: loadLang(), push: initialPush(), watching: false, refreshed: false };
 
 /* ---------- Text in both languages ---------- */
 
@@ -45,7 +46,18 @@ const T = {
     cashWord: "नकद",
     invalid: "यह लिंक सही नहीं है। मालिक से नया लिंक माँगें।",
     loading: "लोड हो रहा है...",
-    loadError: "पेज लोड नहीं हुआ। इंटरनेट जाँचें और दोबारा खोलें।"
+    loadError: "पेज लोड नहीं हुआ। इंटरनेट जाँचें और दोबारा खोलें।",
+    remindTitle: "इस फ़ोन पर याद दिलाना",
+    remindHelp: "अंतिम तिथि से 3 दिन पहले, अंतिम तिथि पर, और उसके बाद हर दिन किराया चुकता होने तक सूचना पाएँ।",
+    turnOn: "याद दिलाना चालू करें",
+    turnOff: "बंद करें",
+    remindOn: "इस फ़ोन पर याद दिलाना चालू है।",
+    working: "चालू हो रहा है...",
+    unsupported: "इस फ़ोन के ब्राउज़र में सूचना नहीं चल सकती। iPhone पर पहले इस पेज को होम स्क्रीन में जोड़ें। मालिक WhatsApp पर भी याद दिला सकते हैं।",
+    denied: "सूचना की अनुमति बंद है। ब्राउज़र की साइट सेटिंग में सूचना की अनुमति दें और पेज दोबारा खोलें।",
+    pushError: "चालू नहीं हो सका। इंटरनेट जाँचकर दोबारा कोशिश करें।",
+    pushOnToast: "याद दिलाना चालू हो गया",
+    pushOffToast: "याद दिलाना बंद हो गया"
   },
   en: {
     pageTitle: "Rent details",
@@ -78,7 +90,18 @@ const T = {
     cashWord: "cash",
     invalid: "This link is not valid. Ask the owner for a new link.",
     loading: "Loading...",
-    loadError: "Could not load the page. Check your internet connection and reload."
+    loadError: "Could not load the page. Check your internet connection and reload.",
+    remindTitle: "Reminders on this phone",
+    remindHelp: "Get a notification 3 days before the due date, on the due date, and every day after it until the rent is paid.",
+    turnOn: "Turn on reminders",
+    turnOff: "Turn off",
+    remindOn: "Reminders are on for this phone.",
+    working: "Turning on...",
+    unsupported: "This phone's browser cannot show notifications. On iPhone, first add this page to the Home Screen. The owner can also remind you on WhatsApp.",
+    denied: "Notifications are blocked. Allow notifications for this site in your browser settings and reopen the page.",
+    pushError: "Could not turn on reminders. Check your internet connection and try again.",
+    pushOnToast: "Reminders are on",
+    pushOffToast: "Reminders are off"
   }
 };
 
@@ -134,6 +157,63 @@ function toast(message) {
   toastTimer = setTimeout(() => { el.className = "toast"; }, 3000);
 }
 
+/* ---------- Reminders ---------- */
+
+function initialPush() {
+  if (!pushPossible()) return "unsupported";
+  if (Notification.permission === "denied") return "denied";
+  let saved = false;
+  try { saved = localStorage.getItem("push") === "1"; } catch (e) { /* ignore */ }
+  return saved && Notification.permission === "granted" ? "on" : "off";
+}
+
+// Saves this phone's notification code against this tenant page.
+async function saveDevice() {
+  const code = await getPushToken(app);
+  if (!code) throw new Error("No notification code received");
+  const id = await deviceId(code);
+  await setDoc(doc(db, "devices", id), {
+    viewToken: token,
+    fcmToken: code,
+    lang: state.lang,
+    updatedAt: serverTimestamp()
+  }, { merge: true });
+}
+
+function watchForeground() {
+  if (state.watching) return;
+  state.watching = true;
+  onForegroundMessage(app, (n) => toast([n.title, n.body].filter(Boolean).join(": ")));
+}
+
+async function turnOnReminders() {
+  state.push = "working";
+  render();
+  try {
+    if (!(await pushSupported())) { state.push = "unsupported"; render(); return; }
+    const permission = await Notification.requestPermission();
+    if (permission === "denied") { state.push = "denied"; render(); return; }
+    if (permission !== "granted") { state.push = "off"; render(); return; }
+    await saveDevice();
+    try { localStorage.setItem("push", "1"); } catch (e) { /* ignore */ }
+    state.push = "on";
+    watchForeground();
+    toast(t().pushOnToast);
+  } catch (err) {
+    console.error(err);
+    state.push = "error";
+  }
+  render();
+}
+
+async function turnOffReminders() {
+  await dropPushToken(app);
+  try { localStorage.removeItem("push"); } catch (e) { /* ignore */ }
+  state.push = "off";
+  toast(t().pushOffToast);
+  render();
+}
+
 /* ---------- Views ---------- */
 
 function statusLabel(status) {
@@ -161,6 +241,7 @@ function langButton() {
       state.lang = state.lang === "hi" ? "en" : "hi";
       saveLang(state.lang);
       render();
+      if (state.push === "on") saveDevice().catch((err) => console.error(err));
     }
   }, t().switchTo);
 }
@@ -215,6 +296,26 @@ function paySection(info, view) {
   );
 }
 
+function remindSection() {
+  const s = state.push;
+  const box = h("section", { class: "section" }, h("h2", {}, t().remindTitle));
+  if (s === "on") {
+    box.append(
+      h("p", { class: "muted small" }, t().remindOn),
+      h("button", { class: "btn", onclick: turnOffReminders }, t().turnOff));
+  } else if (s === "unsupported") {
+    box.append(h("p", { class: "muted small" }, t().unsupported));
+  } else if (s === "denied") {
+    box.append(h("p", { class: "muted small" }, t().denied));
+  } else {
+    box.append(h("p", { class: "muted small" }, t().remindHelp));
+    if (s === "error") box.append(h("p", { class: "error-text", role: "alert" }, t().pushError));
+    box.append(h("button", { class: "btn primary", disabled: s === "working", onclick: turnOnReminders },
+      s === "working" ? t().working : t().turnOn));
+  }
+  return box;
+}
+
 function historySection(info) {
   const items = info.history.slice(0, 6);
   return h("section", { class: "section" },
@@ -262,6 +363,7 @@ function tenantView(view) {
   frag.append(card);
 
   if (info.dues.length > 0) frag.append(paySection(info, view));
+  frag.append(remindSection());
   frag.append(historySection(info));
   return frag;
 }
@@ -289,7 +391,15 @@ if (!/^[0-9a-f]{32}$/.test(token)) {
   render();
   onSnapshot(doc(db, "tenantViews", token), (snap) => {
     if (!snap.exists()) { state.status = "invalid"; state.view = null; }
-    else { state.status = "ready"; state.view = snap.data(); }
+    else {
+      state.status = "ready";
+      state.view = snap.data();
+      if (state.push === "on" && !state.refreshed) {
+        state.refreshed = true;
+        watchForeground();
+        saveDevice().catch((err) => console.error(err));
+      }
+    }
     render();
   }, (err) => {
     console.error(err);
