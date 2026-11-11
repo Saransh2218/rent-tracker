@@ -3,9 +3,10 @@ import {
   getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
 import {
-  getFirestore, collection, doc, onSnapshot, setDoc, writeBatch, serverTimestamp
+  getFirestore, collection, doc, onSnapshot, setDoc, deleteDoc, writeBatch, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
+import { pushPossible, pushSupported, getPushToken, dropPushToken, onForegroundMessage, deviceId } from "./push.js";
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
@@ -22,7 +23,9 @@ const state = {
   denied: false,
   loaded: { rooms: false, payments: false },
   unsubs: [],
-  loginError: ""
+  loginError: "",
+  summary: initialSummary(),
+  watching: false
 };
 
 /* ---------- Dates and money ---------- */
@@ -447,6 +450,83 @@ function whatsappLink(room, ym) {
   return `https://wa.me/${number}?text=${encodeURIComponent(text)}`;
 }
 
+/* ---------- Daily summary on this phone ---------- */
+
+function initialSummary() {
+  if (!pushPossible()) return "unsupported";
+  if (Notification.permission === "denied") return "denied";
+  let saved = false;
+  try { saved = localStorage.getItem("summaryId") !== null; } catch (e) { /* ignore */ }
+  return saved && Notification.permission === "granted" ? "on" : "off";
+}
+
+async function turnOnSummary() {
+  state.summary = "working";
+  render();
+  try {
+    if (!(await pushSupported())) { state.summary = "unsupported"; render(); return; }
+    const permission = await Notification.requestPermission();
+    if (permission === "denied") { state.summary = "denied"; render(); return; }
+    if (permission !== "granted") { state.summary = "off"; render(); return; }
+    const code = await getPushToken(app);
+    if (!code) throw new Error("No notification code received");
+    const id = await deviceId(code);
+    await setDoc(doc(db, "familyDevices", id), {
+      email: state.user.email,
+      fcmToken: code,
+      updatedAt: serverTimestamp()
+    }, { merge: true });
+    try { localStorage.setItem("summaryId", id); } catch (e) { /* ignore */ }
+    state.summary = "on";
+    if (!state.watching) {
+      state.watching = true;
+      onForegroundMessage(app, (n) => toast([n.title, n.body].filter(Boolean).join(": ")));
+    }
+    toast("Daily summary is on for this phone.");
+  } catch (err) {
+    console.error(err);
+    state.summary = "error";
+  }
+  render();
+}
+
+async function turnOffSummary() {
+  let id = null;
+  try { id = localStorage.getItem("summaryId"); } catch (e) { /* ignore */ }
+  try {
+    await dropPushToken(app);
+    if (id) await deleteDoc(doc(db, "familyDevices", id));
+    try { localStorage.removeItem("summaryId"); } catch (e) { /* ignore */ }
+    state.summary = "off";
+    toast("Daily summary is off for this phone.");
+  } catch (err) {
+    console.error(err);
+    toast(friendlyError(err), true);
+  }
+  render();
+}
+
+function summaryPanel() {
+  const s = state.summary;
+  const box = h("section", { class: "panel" }, h("h2", {}, "Daily summary on this phone"));
+  if (s === "on") {
+    box.append(
+      h("p", { class: "muted" }, "This phone gets a summary at 9:00 AM with who has paid and who is overdue."),
+      h("div", { class: "actions" }, h("button", { class: "btn", onclick: turnOffSummary }, "Turn off")));
+  } else if (s === "unsupported") {
+    box.append(h("p", { class: "muted" }, "This browser cannot show notifications. On iPhone, add this page to the Home Screen first."));
+  } else if (s === "denied") {
+    box.append(h("p", { class: "muted" }, "Notifications are blocked. Allow them for this site in the browser settings, then reload."));
+  } else {
+    box.append(h("p", { class: "muted" }, "Get a notification at 9:00 AM with who has paid and who is overdue."));
+    if (s === "error") box.append(h("p", { class: "error-text", role: "alert" }, "Could not turn it on. Check your internet connection and try again."));
+    box.append(h("div", { class: "actions" },
+      h("button", { class: "btn primary", disabled: s === "working", onclick: turnOnSummary },
+        s === "working" ? "Turning on..." : "Turn on daily summary")));
+  }
+  return box;
+}
+
 /* ---------- Views ---------- */
 
 function loginView() {
@@ -548,6 +628,7 @@ function dashboardView() {
 
   frag.append(h("div", { class: "actions", style: "margin-top:16px" },
     h("button", { class: "btn", onclick: () => editRoom(null) }, "Add room")));
+  frag.append(summaryPanel());
 
   return frag;
 }
