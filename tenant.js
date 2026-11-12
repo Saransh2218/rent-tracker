@@ -369,7 +369,7 @@ function tenantView(view) {
 }
 
 function message(text) {
-  return h("section", { class: "panel" }, h("p", {}, text), h("div", { class: "actions" }, langButton()));
+  return h("section", { class: "panel" }, h("h1", {}, text), h("div", { class: "actions" }, langButton()));
 }
 
 function render() {
