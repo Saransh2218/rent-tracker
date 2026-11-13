@@ -28,13 +28,16 @@ export function daysBetween(a, b) { return Math.round((a - b) / 86400000); }
 
 // What the tenant owes: the current month plus any earlier month that
 // the owner has recorded as unpaid. Months with no record before the
-// current one are treated as settled.
+// current one are treated as settled. If "since" is set, it is the first
+// month this tenant pays rent, and earlier months never count.
 export function computeDues(view, now) {
   const today = startOfDay(now);
   const cur = ymOf(today);
   const months = view.months || {};
-  const keys = new Set(Object.keys(months).filter((k) => k <= cur));
-  keys.add(cur);
+  const since = view.since || null;
+  const notStarted = !!since && cur < since;
+  const keys = new Set(Object.keys(months).filter((k) => k <= cur && (!since || k >= since)));
+  if (!notStarted) keys.add(cur);
 
   const dues = [];
   const history = [];
@@ -63,14 +66,14 @@ export function computeDues(view, now) {
     else status = { key: "upcoming", days: diff };
   }
 
-  const nextYm = shiftYm(cur, 1);
+  const nextYm = notStarted ? since : shiftYm(cur, 1);
   const next = {
     ym: nextYm,
     amount: months[nextYm] && months[nextYm].rent != null ? Number(months[nextYm].rent) : Number(view.rent),
     due: dueDateFor(view.dueDay, nextYm)
   };
 
-  return { dues, history, totalDue, status, next, cur };
+  return { dues, history, totalDue, status, next, cur, notStarted };
 }
 
 // Standard UPI payment link. The same text goes into the QR code.
