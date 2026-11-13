@@ -3,9 +3,10 @@ import {
   getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
 import {
-  getFirestore, collection, doc, onSnapshot, setDoc, deleteDoc, writeBatch, serverTimestamp
+  getFirestore, collection, doc, onSnapshot, setDoc, deleteDoc, writeBatch, getDocs, query, where, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
+import { computeDues } from "./tenant-logic.js";
 import { pushPossible, pushSupported, getPushToken, dropPushToken, onForegroundMessage, deviceId } from "./push.js";
 
 const app = initializeApp(firebaseConfig);
@@ -25,7 +26,9 @@ const state = {
   unsubs: [],
   loginError: "",
   summary: initialSummary(),
-  watching: false
+  watching: false,
+  past: [],
+  page: "rooms"
 };
 
 /* ---------- Dates and money ---------- */
@@ -149,6 +152,7 @@ function openForm(cfg) {
   const form = h("form", { class: "form", novalidate: true });
 
   form.append(h("h2", { id: "dialog-title" }, cfg.title));
+  if (cfg.warning) form.append(h("p", { class: "warn", role: "alert" }, cfg.warning));
   if (cfg.intro) form.append(h("p", { class: "muted small" }, cfg.intro));
 
   for (const f of cfg.fields) {
@@ -208,6 +212,7 @@ function viewData(room, months) {
     name: room.name,
     rent: Number(room.rent),
     dueDay: Number(room.dueDay),
+    since: room.since || null,
     months,
     updatedAt: serverTimestamp()
   };
@@ -371,6 +376,8 @@ function editRoom(room) {
         dueDay: Number(v.dueDay),
         advance: Number(v.advance === "" ? 0 : v.advance),
         token: room && room.token ? room.token : newToken(),
+        since: room && room.since ? room.since : null,
+        vacant: false,
         active: true
       };
       await setDoc(doc(db, "rooms", id), data, { merge: true });
@@ -416,6 +423,132 @@ function importRooms() {
       }
       await batch.commit();
       toast("Rooms imported.");
+    }
+  });
+}
+
+function defaultFirstMonth(dueDay) {
+  // The month of the next due date: this month if it has not passed, else next month.
+  const ym = currentYm();
+  return dueDateFor({ dueDay }, ym) >= startOfToday() ? ym : shiftYm(ym, 1);
+}
+
+// A new tenant moves into an empty room.
+function addTenant(room) {
+  openForm({
+    title: `Add tenant to room ${room.roomNo}`,
+    intro: "The tenant gets a new private link. Rent is counted only from the first rent month you choose.",
+    fields: [
+      { name: "name", label: "Tenant name", value: "" },
+      { name: "phone", label: "Phone number", type: "tel", inputmode: "numeric", value: "", hint: "10 digit mobile number. Used for the WhatsApp button." },
+      { name: "rent", label: "Monthly rent (\u20B9)", type: "number", inputmode: "numeric", min: 0, value: room.rent },
+      { name: "dueDay", label: "Due day of the month", type: "number", inputmode: "numeric", min: 1, max: 31, value: room.dueDay,
+        hint: "In shorter months the last day of the month is used." },
+      { name: "advance", label: "Advance received (\u20B9)", type: "number", inputmode: "numeric", min: 0, value: 0 },
+      { name: "since", label: "First rent month", type: "month", value: defaultFirstMonth(room.dueDay),
+        hint: "Months before this never show as due." }
+    ],
+    submitLabel: "Add tenant",
+    validate: (v) => {
+      if (!v.name) return "Enter the tenant name.";
+      const phone = normalizePhone(v.phone);
+      if (phone && !/^\d{10}$/.test(phone)) return "The phone number must have 10 digits.";
+      const rent = Number(v.rent);
+      if (v.rent === "" || !Number.isFinite(rent) || rent < 0) return "Enter the monthly rent.";
+      const day = Number(v.dueDay);
+      if (!Number.isInteger(day) || day < 1 || day > 31) return "The due day must be between 1 and 31.";
+      const advance = Number(v.advance === "" ? 0 : v.advance);
+      if (!Number.isFinite(advance) || advance < 0) return "The advance must be 0 or more.";
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(v.since)) return "Choose the first rent month.";
+      return null;
+    },
+    onSubmit: async (v) => {
+      const data = {
+        roomNo: Number(room.roomNo),
+        name: v.name,
+        phone: normalizePhone(v.phone),
+        rent: Number(v.rent),
+        dueDay: Number(v.dueDay),
+        advance: Number(v.advance === "" ? 0 : v.advance),
+        token: newToken(),
+        since: v.since,
+        vacant: false,
+        active: true
+      };
+      await setDoc(doc(db, "rooms", room.id), data, { merge: true });
+      await syncView({ id: room.id, ...data });
+      toast(`Tenant added to room ${room.roomNo}.`);
+    }
+  });
+}
+
+// A tenant moves out: their records go to Past tenants, their link and
+// reminders stop, and the room becomes vacant. All changes are saved
+// together or not at all.
+function moveOut(room) {
+  const info = computeDues({ rent: room.rent, dueDay: room.dueDay, since: room.since || null, months: monthsFor(room.id) }, new Date());
+  const warning = info.totalDue > 0
+    ? `Warning: ${room.name} still owes ${rupee(info.totalDue)} (${info.dues.map((d) => ymLabel(d.ym)).join(", ")}). You can still continue.`
+    : "";
+  openForm({
+    title: `Move out of room ${room.roomNo}`,
+    warning,
+    intro: `${info.totalDue > 0 ? "" : "No unpaid rent is recorded. "}Advance held: ${rupee(room.advance || 0)}. The link and reminders stop at once and the records move to Past tenants. This cannot be undone.`,
+    fields: [
+      { name: "movedOut", label: "Move-out date", type: "date", value: todayIso() },
+      { name: "advanceReturned", label: "Advance returned (\u20B9)", type: "number", inputmode: "numeric", min: 0,
+        value: room.advance || 0, hint: "Type 0 if nothing was returned." },
+      { name: "note", label: "Note (optional)", value: "", hint: "For example: deducted for damage." }
+    ],
+    submitLabel: "Move out",
+    validate: (v) => {
+      if (!v.movedOut) return "Choose the move-out date.";
+      const returned = Number(v.advanceReturned === "" ? 0 : v.advanceReturned);
+      if (!Number.isFinite(returned) || returned < 0) return "The advance returned must be 0 or more.";
+      return null;
+    },
+    onSubmit: async (v) => {
+      const deviceSnap = room.token
+        ? await getDocs(query(collection(db, "devices"), where("viewToken", "==", room.token)))
+        : { docs: [] };
+      const batch = writeBatch(db);
+
+      batch.set(doc(collection(db, "pastTenants")), {
+        roomNo: Number(room.roomNo),
+        name: room.name,
+        phone: room.phone || "",
+        rent: Number(room.rent),
+        dueDay: Number(room.dueDay),
+        since: room.since || null,
+        advance: Number(room.advance || 0),
+        advanceReturned: Number(v.advanceReturned === "" ? 0 : v.advanceReturned),
+        note: v.note,
+        movedOut: v.movedOut,
+        outstanding: info.totalDue,
+        months: monthsFor(room.id),
+        createdAt: serverTimestamp()
+      });
+
+      Object.keys(state.payments)
+        .filter((id) => state.payments[id].roomId === room.id)
+        .forEach((id) => batch.delete(doc(db, "payments", id)));
+      deviceSnap.docs.forEach((d) => batch.delete(d.ref));
+      if (room.token) batch.delete(doc(db, "tenantViews", room.token));
+
+      batch.set(doc(db, "rooms", room.id), {
+        roomNo: Number(room.roomNo),
+        name: "",
+        phone: "",
+        rent: Number(room.rent),
+        dueDay: Number(room.dueDay),
+        advance: 0,
+        token: null,
+        since: null,
+        vacant: true,
+        active: true
+      });
+      await batch.commit();
+      toast(`Room ${room.roomNo} is now vacant.`);
     }
   });
 }
@@ -546,7 +679,45 @@ function deniedView() {
   );
 }
 
+function vacantCard(room) {
+  return h("li", { class: "room" },
+    h("div", { class: "room-head" },
+      h("div", {}, h("h2", {}, `Room ${room.roomNo}`), h("p", { class: "tenant" }, "No tenant")),
+      h("span", { class: "pill upcoming" }, "Vacant")),
+    h("p", { class: "muted small" }, `Last rent ${rupee(room.rent)}, due day ${room.dueDay}`),
+    h("div", { class: "actions" },
+      h("button", { class: "btn primary", onclick: () => addTenant(room) }, "Add tenant"),
+      h("button", { class: "btn", onclick: () => removeRoom(room) }, "Remove room")));
+}
+
+// Only an empty room can be removed. Records of past tenants are kept.
+async function removeRoom(room) {
+  if (!window.confirm(`Remove room ${room.roomNo} from the list? Past tenant records are kept.`)) return;
+  try {
+    await deleteDoc(doc(db, "rooms", room.id));
+    toast(`Room ${room.roomNo} removed.`);
+  } catch (err) {
+    console.error(err);
+    toast(friendlyError(err), true);
+  }
+}
+
+function notStartedCard(room) {
+  return h("li", { class: "room" },
+    h("div", { class: "room-head" },
+      h("div", {}, h("h2", {}, `Room ${room.roomNo}`), h("p", { class: "tenant" }, room.name)),
+      h("span", { class: "pill upcoming" }, `Starts ${ymLabel(room.since)}`)),
+    h("p", { class: "muted small" }, `Rent of ${rupee(room.rent)} is counted from ${ymLabel(room.since)}.`),
+    Number(room.advance) > 0 ? h("p", { class: "muted small" }, `Advance held: ${rupee(room.advance)}`) : null,
+    h("div", { class: "actions" },
+      h("button", { class: "btn", onclick: () => copyTenantLink(room) }, "Copy tenant link"),
+      h("button", { class: "btn", onclick: () => editRoom(room) }, "Edit tenant"),
+      h("button", { class: "btn", onclick: () => moveOut(room) }, "Move out")));
+}
+
 function roomCard(room) {
+  if (room.vacant) return vacantCard(room);
+  if (room.since && state.ym < room.since) return notStartedCard(room);
   const ym = state.ym;
   const b = billFor(room, ym);
   const st = statusFor(room, ym);
@@ -571,6 +742,7 @@ function roomCard(room) {
   buttons.push(h("button", { class: "btn", onclick: () => editBill(room) }, "Edit bill"));
   buttons.push(h("button", { class: "btn", onclick: () => copyTenantLink(room) }, "Copy tenant link"));
   buttons.push(h("button", { class: "btn", onclick: () => editRoom(room) }, "Edit tenant"));
+  buttons.push(h("button", { class: "btn", onclick: () => moveOut(room) }, "Move out"));
 
   return h("li", { class: "room " + st.key },
     h("div", { class: "room-head" },
@@ -613,8 +785,10 @@ function dashboardView() {
     return frag;
   }
 
-  let collected = 0, pending = 0, paidCount = 0;
+  let collected = 0, pending = 0, paidCount = 0, counted = 0;
   for (const room of rooms) {
+    if (room.vacant || (room.since && state.ym < room.since)) continue;
+    counted += 1;
     const b = billFor(room, state.ym);
     if (b.paid) { collected += b.total; paidCount += 1; } else { pending += b.total; }
   }
@@ -622,14 +796,54 @@ function dashboardView() {
   frag.append(h("div", { class: "summary" },
     h("div", {}, h("span", { class: "muted small" }, "Collected"), h("strong", {}, rupee(collected))),
     h("div", {}, h("span", { class: "muted small" }, "Pending"), h("strong", {}, rupee(pending))),
-    h("div", {}, h("span", { class: "muted small" }, "Rooms paid"), h("strong", {}, `${paidCount} of ${rooms.length}`))));
+    h("div", {}, h("span", { class: "muted small" }, "Rooms paid"), h("strong", {}, `${paidCount} of ${counted}`))));
 
   frag.append(h("ul", { class: "rooms" }, rooms.map(roomCard)));
 
   frag.append(h("div", { class: "actions", style: "margin-top:16px" },
-    h("button", { class: "btn", onclick: () => editRoom(null) }, "Add room")));
+    h("button", { class: "btn", onclick: () => editRoom(null) }, "Add room"),
+    h("button", { class: "btn", onclick: () => { state.page = "past"; render(); window.scrollTo(0, 0); } }, "Past tenants")));
   frag.append(summaryPanel());
 
+  return frag;
+}
+
+function pastCard(p) {
+  const months = Object.entries(p.months || {}).sort((a, b) => (a[0] < b[0] ? 1 : -1));
+  const paidCount = months.filter(([, m]) => m.paid).length;
+  return h("li", { class: "room" },
+    h("div", { class: "room-head" },
+      h("div", {}, h("h2", {}, p.name), h("p", { class: "tenant" }, `Room ${p.roomNo}`)),
+      h("span", { class: "pill upcoming" }, p.movedOut ? `Left ${fmtIso(p.movedOut)}` : "Left")),
+    h("p", { class: "muted small" }, `Rent ${rupee(p.rent)}, due day ${p.dueDay}${p.since ? `, rent from ${ymLabel(p.since)}` : ""}`),
+    h("p", { class: "muted small" }, `Advance ${rupee(p.advance)}, returned ${rupee(p.advanceReturned)}${p.note ? `. ${p.note}` : ""}`),
+    h("p", { class: "muted small" }, `Unpaid rent at move-out: ${rupee(p.outstanding)}`),
+    p.phone ? h("p", { class: "muted small" }, `Phone ${p.phone}`) : null,
+    months.length
+      ? h("details", { class: "hist" },
+          h("summary", {}, `Payment history (${paidCount} of ${months.length} months paid)`),
+          h("ul", {}, months.map(([ym, m]) => {
+            const total = Number(m.rent) + Number(m.electricity || 0);
+            const how = m.method === "cash" ? "cash" : "UPI";
+            const text = m.paid ? `paid${m.paidOn ? " " + fmtIso(m.paidOn) : ""} by ${how}` : "not paid";
+            return h("li", {}, `${ymLabel(ym)}: ${rupee(total)}, ${text}`);
+          })))
+      : null
+  );
+}
+
+function pastView() {
+  const frag = document.createDocumentFragment();
+  frag.append(h("header", { class: "top" },
+    h("div", {}, h("h1", {}, "Past tenants"), h("p", { class: "muted small" }, "Read-only records of people who moved out.")),
+    h("button", { class: "btn", onclick: () => { state.page = "rooms"; render(); } }, "Back")));
+  const list = [...state.past].sort((a, b) => String(b.movedOut || "").localeCompare(String(a.movedOut || "")));
+  if (list.length === 0) {
+    frag.append(h("section", { class: "panel" }, h("h2", {}, "No past tenants yet"),
+      h("p", { class: "muted" }, "When a tenant moves out, their records appear here.")));
+  } else {
+    frag.append(h("ul", { class: "rooms" }, list.map(pastCard)));
+  }
   return frag;
 }
 
@@ -637,7 +851,7 @@ function render() {
   root.replaceChildren();
   if (!state.user) { root.append(loginView()); return; }
   if (state.denied) { root.append(deniedView()); return; }
-  root.append(dashboardView());
+  root.append(state.page === "past" ? pastView() : dashboardView());
 }
 
 /* ---------- Sign in and live data ---------- */
@@ -682,6 +896,15 @@ function startListening() {
     state.loaded.payments = true;
     render();
   }, onListenError));
+
+  // Past tenants load separately, so a missing rule here never blocks the dashboard.
+  state.unsubs.push(onSnapshot(collection(db, "pastTenants"), (snap) => {
+    state.past = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    render();
+  }, (err) => {
+    console.error(err);
+    toast("Past tenants could not load. Publish the new database rules in Firebase.", true);
+  }));
 }
 
 onAuthStateChanged(auth, (user) => {
@@ -690,6 +913,8 @@ onAuthStateChanged(auth, (user) => {
   state.denied = false;
   state.rooms = [];
   state.payments = {};
+  state.past = [];
+  state.page = "rooms";
   state.loaded = { rooms: false, payments: false };
   if (user) startListening();
   render();
