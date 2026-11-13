@@ -82,12 +82,12 @@ export function summaryMessage({ rows, today, siteUrl }) {
 // Everything the sender needs, built from the database contents.
 export function buildPlan({ rooms, payments, devices, familyDevices, now, siteUrl }) {
   const today = istToday(now);
-  const sorted = [...rooms].filter((r) => r.active !== false)
+  const sorted = [...rooms].filter((r) => r.active !== false && !r.vacant)
     .sort((a, b) => Number(a.roomNo) - Number(b.roomNo));
 
   const rows = sorted.map((room) => ({
     room,
-    info: computeDues({ rent: room.rent, dueDay: room.dueDay, months: monthsFor(payments, room.id) }, today.date)
+    info: computeDues({ rent: room.rent, dueDay: room.dueDay, since: room.since || null, months: monthsFor(payments, room.id) }, today.date)
   }));
 
   const tenantSends = [];
@@ -107,7 +107,8 @@ export function buildPlan({ rooms, payments, devices, familyDevices, now, siteUr
     }
   }
 
-  const summary = summaryMessage({ rows, today, siteUrl });
+  // Rooms whose rent has not started yet are left out of the totals.
+  const summary = summaryMessage({ rows: rows.filter((r) => !r.info.notStarted), today, siteUrl });
   const familySends = familyDevices.map((d) => ({
     collection: "familyDevices",
     deviceId: d.id,
