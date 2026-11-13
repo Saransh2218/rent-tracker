@@ -47,6 +47,7 @@ const T = {
     invalid: "यह लिंक सही नहीं है। मालिक से नया लिंक माँगें।",
     loading: "लोड हो रहा है...",
     loadError: "पेज लोड नहीं हुआ। इंटरनेट जाँचें और दोबारा खोलें।",
+    firstRent: (d) => `आपका पहला किराया ${d} को देय है`,
     remindTitle: "इस फ़ोन पर याद दिलाना",
     remindHelp: "अंतिम तिथि से 3 दिन पहले, अंतिम तिथि पर, और उसके बाद हर दिन किराया चुकता होने तक सूचना पाएँ।",
     turnOn: "याद दिलाना चालू करें",
@@ -91,6 +92,7 @@ const T = {
     invalid: "This link is not valid. Ask the owner for a new link.",
     loading: "Loading...",
     loadError: "Could not load the page. Check your internet connection and reload.",
+    firstRent: (d) => `Your first rent is due on ${d}`,
     remindTitle: "Reminders on this phone",
     remindHelp: "Get a notification 3 days before the due date, on the due date, and every day after it until the rent is paid.",
     turnOn: "Turn on reminders",
@@ -341,7 +343,12 @@ function tenantView(view) {
   const key = pillClass(info.status.key);
   const card = h("section", { class: "due-card " + key });
 
-  if (info.dues.length === 0) {
+  if (info.notStarted) {
+    card.append(
+      h("p", { class: "muted small" }, t().firstRent(fmtDay(info.next.due))),
+      h("p", { class: "amount" }, rupee(info.next.amount)),
+      h("span", { class: "pill upcoming" }, t().upcoming));
+  } else if (info.dues.length === 0) {
     card.append(
       h("p", { class: "muted small" }, t().allPaid),
       h("p", { class: "amount" }, rupee(0)),
