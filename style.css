@@ -239,3 +239,17 @@ textarea { font-family: ui-monospace, Consolas, monospace; font-size: 0.875rem; 
   padding: 4px 0 20px;
   font-weight: 600;
 }
+
+/* Past tenants */
+.hist { margin-top: 8px; }
+.hist summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; font-weight: 600; }
+.hist ul { margin: 0 0 4px; padding-left: 18px; display: grid; gap: 2px; font-size: 0.875rem; color: var(--muted); }
+
+/* Warning box inside forms */
+.warn {
+  background: var(--soon-bg);
+  color: var(--soon);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-weight: 600;
+}
