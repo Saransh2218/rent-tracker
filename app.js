@@ -7,6 +7,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
 import { computeDues } from "./tenant-logic.js";
+import { buildSheets } from "./export.js";
 import { pushPossible, pushSupported, getPushToken, dropPushToken, onForegroundMessage, deviceId } from "./push.js";
 
 const app = initializeApp(firebaseConfig);
@@ -28,7 +29,8 @@ const state = {
   summary: initialSummary(),
   watching: false,
   past: [],
-  page: "rooms"
+  page: "rooms",
+  exporting: false
 };
 
 /* ---------- Dates and money ---------- */
@@ -583,6 +585,51 @@ function whatsappLink(room, ym) {
   return `https://wa.me/${number}?text=${encodeURIComponent(text)}`;
 }
 
+/* ---------- Excel export ---------- */
+
+// The Excel library is large, so it loads only when the button is pressed.
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    if (window.writeXlsxFile) { resolve(); return; }
+    const el = document.createElement("script");
+    el.src = src;
+    el.onload = () => resolve();
+    el.onerror = () => reject(new Error("Could not load " + src));
+    document.head.append(el);
+  });
+}
+
+async function exportExcel() {
+  state.exporting = true;
+  render();
+  try {
+    await loadScript("vendor/write-excel-file.min.js");
+    const sheets = buildSheets({ rooms: state.rooms, payments: state.payments, past: state.past, ym: state.ym });
+    const blob = await window.writeXlsxFile(sheets).toBlob();
+    const url = URL.createObjectURL(blob);
+    const link = h("a", { href: url, download: `rent-records-${todayIso()}.xlsx`, style: "display:none" });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    toast("Excel file downloaded.");
+  } catch (err) {
+    console.error(err);
+    toast("Could not create the Excel file. Check your internet connection and try again.", true);
+  }
+  state.exporting = false;
+  render();
+}
+
+function exportPanel() {
+  return h("section", { class: "panel" },
+    h("h2", {}, "Export to Excel"),
+    h("p", { class: "muted" }, `Downloads one file with the month report for ${ymLabel(state.ym)}, all payments, tenants and past tenants. It contains names and phone numbers, so keep it private.`),
+    h("div", { class: "actions" },
+      h("button", { class: "btn primary", disabled: state.exporting, onclick: exportExcel },
+        state.exporting ? "Preparing..." : "Download Excel file")));
+}
+
 /* ---------- Daily summary on this phone ---------- */
 
 function initialSummary() {
@@ -803,6 +850,7 @@ function dashboardView() {
   frag.append(h("div", { class: "actions", style: "margin-top:16px" },
     h("button", { class: "btn", onclick: () => editRoom(null) }, "Add room"),
     h("button", { class: "btn", onclick: () => { state.page = "past"; render(); window.scrollTo(0, 0); } }, "Past tenants")));
+  frag.append(exportPanel());
   frag.append(summaryPanel());
 
   return frag;
